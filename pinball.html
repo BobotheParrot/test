@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pinball</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: monospace;
+      color: #eee;
+    }
+    h1 { margin-bottom: 6px; font-size: 1.8rem; color: #f7c948; }
+    #info { margin-bottom: 8px; font-size: 1rem; color: #aaa; }
+    canvas { border: 2px solid #f7c948; background: #0d0d1a; display: block; }
+  </style>
+</head>
+<body>
+  <h1>Pinball</h1>
+  <div id="info">Score: <span id="score">0</span> &nbsp;|&nbsp; Balls: <span id="balls">3</span></div>
+  <canvas id="c" width="360" height="600"></canvas>
+
+  <script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+
+    // --- State ---
+    let score, ballsLeft, ball, vx, vy, launched, gameOver;
+
+    // Flipper state
+    const LEFT_FLIPPER  = { x: 90,  y: 540, angle: 0, active: false, dir: 1  };
+    const RIGHT_FLIPPER = { x: 270, y: 540, angle: Math.PI, active: false, dir: -1 };
+    const FLIPPER_LEN = 55;
+    const FLIPPER_REST  =  0.45;   // radians down
+    const FLIPPER_UP    = -0.45;
+
+    // Bumpers [x, y, radius, color]
+    const BUMPERS = [
+      { x: 100, y: 180, r: 22, color: '#e94560', lit: 0 },
+      { x: 260, y: 180, r: 22, color: '#4ecca3', lit: 0 },
+      { x: 180, y: 130, r: 22, color: '#f7c948', lit: 0 },
+      { x: 130, y: 270, r: 18, color: '#a78bfa', lit: 0 },
+      { x: 230, y: 270, r: 18, color: '#f97316', lit: 0 },
+    ];
+
+    // Walls (left/right gutters, angled slingshots)
+    const BALL_R = 10;
+
+    function init() {
+      score = 0;
+      ballsLeft = 3;
+      launched = false;
+      gameOver = false;
+      resetBall();
+      updateHUD();
+    }
+
+    function resetBall() {
+      ball = { x: 330, y: 480 };
+      vx = 0;
+      vy = 0;
+      launched = false;
+    }
+
+    function updateHUD() {
+      document.getElementById('score').textContent = score;
+      document.getElementById('balls').textContent = ballsLeft;
+    }
+
+    // --- Flipper helpers ---
+    function getFlipperAngle(f) {
+      const target = f.active ? FLIPPER_UP : FLIPPER_REST;
+      return f.dir === 1
+        ? f.x < W / 2 ? target : Math.PI - target
+        : f.x < W / 2 ? target : Math.PI - target;
+    }
+
+    function flipperEndPoint(f) {
+      const a = currentAngle(f);
+      return {
+        x: f.x + Math.cos(a) * FLIPPER_LEN * f.dir,
+        y: f.y + Math.sin(a) * FLIPPER_LEN * f.dir
+      };
+    }
+
+    // Store current rendered angles
+    LEFT_FLIPPER.cur  = FLIPPER_REST;
+    RIGHT_FLIPPER.cur = Math.PI - FLIPPER_REST;
+
+    function currentAngle(f) { return f.cur; }
+
+    function updateFlippers() {
+      const speed = 0.18;
+      // Left
+      const lTarget = LEFT_FLIPPER.active ? -FLIPPER_REST : FLIPPER_REST;
+      LEFT_FLIPPER.cur += (lTarget - LEFT_FLIPPER.cur) * speed * 8;
+
+      // Right
+      const rTarget = RIGHT_FLIPPER.active ? -(Math.PI - FLIPPER_REST) + Math.PI : Math.PI - FLIPPER_REST;
+      // simpler: right flipper mirrors left
+      const rT2 = RIGHT_FLIPPER.active ? FLIPPER_REST : Math.PI - FLIPPER_REST;
+      RIGHT_FLIPPER.cur += (rT2 - RIGHT_FLIPPER.cur) * speed * 8;
+    }
+
+    // --- Ball vs flipper collision ---
+    function closestPointOnSegment(px, py, ax, ay, bx, by) {
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      if (len2 === 0) return { x: ax, y: ay, t: 0 };
+      let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+      t = Math.max(0, Math.min(1, t));
+      return { x: ax + t * dx, y: ay + t * dy, t };
+    }
+
+    function collideFlipper(f) {
+      const ep = flipperEndPoint(f);
+      const cp = closestPointOnSegment(ball.x, ball.y, f.x, f.y, ep.x, ep.y);
+      const dx = ball.x - cp.x, dy = ball.y - cp.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < BALL_R + 4) {
+        const nx = dx / dist, ny = dy / dist;
+        ball.x = cp.x + nx * (BALL_R + 4);
+        ball.y = cp.y + ny * (BALL_R + 4);
+        const dot = vx * nx + vy * ny;
+        const boost = f.active ? 1.3 : 1.0;
+        vx = (vx - 2 * dot * nx) * boost;
+        vy = (vy - 2 * dot * ny) * boost;
+        if (vy > 0) vy = -Math.abs(vy); // always bounce up off flipper
+      }
+    }
+
+    // --- Physics update ---
+    function update() {
+      if (!launched || gameOver) return;
+
+      vx *= 0.995;
+      vy += 0.25; // gravity
+
+      ball.x += vx;
+      ball.y += vy;
+
+      // Wall collisions
+      if (ball.x - BALL_R < 20) { ball.x = 20 + BALL_R; vx = Math.abs(vx); }
+      if (ball.x + BALL_R > W - 20) { ball.x = W - 20 - BALL_R; vx = -Math.abs(vx); }
+      if (ball.y - BALL_R < 10) { ball.y = 10 + BALL_R; vy = Math.abs(vy); }
+
+      // Bumper collisions
+      BUMPERS.forEach(b => {
+        const dx = ball.x - b.x, dy = ball.y - b.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < BALL_R + b.r) {
+          const nx = dx / dist, ny = dy / dist;
+          ball.x = b.x + nx * (BALL_R + b.r + 1);
+          ball.y = b.y + ny * (BALL_R + b.r + 1);
+          const speed = Math.sqrt(vx * vx + vy * vy);
+          vx = nx * Math.max(speed, 6);
+          vy = ny * Math.max(speed, 6);
+          score += 100;
+          b.lit = 12;
+          updateHUD();
+        }
+        if (b.lit > 0) b.lit--;
+      });
+
+      // Flipper collisions
+      collideFlipper(LEFT_FLIPPER);
+      collideFlipper(RIGHT_FLIPPER);
+
+      // Lost ball
+      if (ball.y > H + 20) {
+        ballsLeft--;
+        updateHUD();
+        if (ballsLeft <= 0) {
+          gameOver = true;
+        } else {
+          resetBall();
+        }
+      }
+    }
+
+    // --- Draw ---
+    function drawFlipper(f) {
+      const ep = flipperEndPoint(f);
+      ctx.save();
+      ctx.strokeStyle = '#f7c948';
+      ctx.lineWidth = 10;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(f.x, f.y);
+      ctx.lineTo(ep.x, ep.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      // Walls
+      ctx.strokeStyle = '#4a90d9';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(20, 0); ctx.lineTo(20, H - 80);
+      ctx.moveTo(W - 20, 0); ctx.lineTo(W - 20, H - 80);
+      // Gutter angled walls
+      ctx.moveTo(20, H - 80); ctx.lineTo(LEFT_FLIPPER.x - 5, LEFT_FLIPPER.y);
+      ctx.moveTo(W - 20, H - 80); ctx.lineTo(RIGHT_FLIPPER.x + 5, RIGHT_FLIPPER.y);
+      ctx.stroke();
+
+      // Launch lane
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(W - 40, 400); ctx.lineTo(W - 40, H);
+      ctx.stroke();
+
+      // Bumpers
+      BUMPERS.forEach(b => {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+        ctx.fillStyle = b.lit > 0 ? '#fff' : b.color;
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      });
+
+      // Flippers
+      drawFlipper(LEFT_FLIPPER);
+      drawFlipper(RIGHT_FLIPPER);
+
+      // Ball
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, BALL_R, 0, Math.PI * 2);
+      const grad = ctx.createRadialGradient(ball.x - 3, ball.y - 3, 1, ball.x, ball.y, BALL_R);
+      grad.addColorStop(0, '#fff');
+      grad.addColorStop(1, '#aaa');
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // Overlays
+      if (!launched && !gameOver) {
+        ctx.fillStyle = 'rgba(247,201,72,0.15)';
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = '#f7c948';
+        ctx.font = 'bold 20px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('Press SPACE to launch', W / 2, H / 2);
+        ctx.font = '14px monospace';
+        ctx.fillStyle = '#aaa';
+        ctx.fillText('Z = left flipper   /  = right flipper', W / 2, H / 2 + 28);
+      }
+
+      if (gameOver) {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = '#e94560';
+        ctx.font = 'bold 40px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('GAME OVER', W / 2, H / 2 - 20);
+        ctx.fillStyle = '#f7c948';
+        ctx.font = '22px monospace';
+        ctx.fillText('Score: ' + score, W / 2, H / 2 + 20);
+        ctx.fillStyle = '#aaa';
+        ctx.font = '16px monospace';
+        ctx.fillText('Press SPACE to restart', W / 2, H / 2 + 55);
+      }
+    }
+
+    // --- Input ---
+    document.addEventListener('keydown', e => {
+      if (e.code === 'KeyZ') LEFT_FLIPPER.active = true;
+      if (e.code === 'Slash') RIGHT_FLIPPER.active = true;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (gameOver) { init(); return; }
+        if (!launched) {
+          launched = true;
+          vx = -3.5;
+          vy = -10;
+        }
+      }
+    });
+    document.addEventListener('keyup', e => {
+      if (e.code === 'KeyZ') LEFT_FLIPPER.active = false;
+      if (e.code === 'Slash') RIGHT_FLIPPER.active = false;
+    });
+
+    // --- Loop ---
+    function loop() {
+      updateFlippers();
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    init();
+    loop();
+  </script>
+</body>
+</html>
